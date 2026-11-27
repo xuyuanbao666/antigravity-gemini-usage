@@ -10,12 +10,23 @@ function readInAntigravity({ method, id }) {
     const seen = new Set();
     const isService = value => value && typeof value.getUserStatus === 'function' &&
         typeof value.getCascadeTrajectory === 'function';
+    const wantsContext = method === 'conversation';
+    const isAgentManager = value => value && typeof value.peek === 'function' &&
+        typeof value.getAgentStates === 'function';
     let service;
-    for (let index = 0; index < queue.length && index < 5000 && !service; index++) {
+    let manager;
+    for (let index = 0; index < queue.length && index < 5000 && (!service || wantsContext && !manager); index++) {
         const fiber = queue[index];
         if (!fiber || seen.has(fiber)) continue;
         seen.add(fiber);
-        if (isService(fiber.memoizedProps?.value)) service = fiber.memoizedProps.value;
+        const value = fiber.memoizedProps?.value;
+        if (!service && isService(value)) service = value;
+        if (wantsContext && !manager) {
+            if (isAgentManager(value)) manager = value;
+            for (let link = fiber.dependencies?.firstContext, i = 0; link && !manager && i < 24; link = link.next, i++) {
+                if (isAgentManager(link.memoizedValue)) manager = link.memoizedValue;
+            }
+        }
         if (fiber.child) queue.push(fiber.child);
         if (fiber.sibling) queue.push(fiber.sibling);
     }
@@ -38,6 +49,18 @@ function readInAntigravity({ method, id }) {
         effortLevel: str(object?.effortLevel),
     });
     const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+    function contextWindow(raw, source) {
+        const integer = value => {
+            if (typeof value !== 'number' && typeof value !== 'bigint' &&
+                !(typeof value === 'string' && /^\d+$/.test(value))) return null;
+            const n = Number(value);
+            return Number.isSafeInteger(n) && n >= 0 ? n : null;
+        };
+        const used = integer(raw?.estimatedTokensUsed);
+        const limit = integer(raw?.maxContextTokens);
+        return used === null ? null : { used, limit: limit || null, source,
+            afterCompaction: raw.estimatedAfterCompaction === true };
+    }
 
     return (async () => {
         if (method === 'catalog') {
@@ -60,11 +83,25 @@ function readInAntigravity({ method, id }) {
             return { summaries: entries.filter(([key]) => uuid.test(key)).map(([key, row]) =>
                 [key, { lastModifiedTime: time(row?.lastModifiedTime), stepCount: Number(row?.stepCount) || 0 }]) };
         }
-        if (method !== 'trajectory' || !uuid.test(id)) return { failure: '无效的历史记录请求' };
+        if ((!wantsContext && method !== 'trajectory') || !uuid.test(id)) return { failure: '无效的历史记录请求' };
         const result = await service.getCascadeTrajectory({ cascadeId: id });
         const trajectory = result?.trajectory;
         const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
         const items = Array.isArray(trajectory?.generatorMetadata) ? trajectory.generatorMetadata : [];
+        let context = null;
+        if (wantsContext) {
+            try {
+                const provider = manager?.peek(id);
+                context = contextWindow(provider?.getState?.()?.contextWindowUsage, 'live');
+            } catch {}
+            context ||= contextWindow(result?.contextWindowUsage, 'history') ||
+                contextWindow(trajectory?.contextWindowUsage, 'history');
+            for (let index = items.length - 1; index >= 0 && !context; index--) {
+                const item = items[index];
+                const chat = item?.metadata?.case === 'chatModel' ? item.metadata.value : item?.chatModel;
+                context = contextWindow(chat?.chatStartMetadata?.contextWindowMetadata, 'previous-request');
+            }
+        }
         return { rows: items.map((item, index) => {
             const chat = item?.metadata?.case === 'chatModel' ? item.metadata.value : item?.chatModel;
             const usage = chat?.usage;
@@ -89,7 +126,7 @@ function readInAntigravity({ method, id }) {
                     },
                 },
             };
-        }).filter(Boolean), available: Boolean(trajectory) };
+        }).filter(Boolean), available: Boolean(trajectory || context), ...(wantsContext ? { context } : {}) };
     })();
 }
 

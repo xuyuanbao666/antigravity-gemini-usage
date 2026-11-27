@@ -179,10 +179,10 @@ function createReader(contents) {
         if (!currentRequests.has(id)) {
             const reading = (async () => {
                 await readCatalog();
-                const response = await readUsage(contents, 'trajectory', id);
+                const response = await readUsage(contents, 'conversation', id);
                 if (!response.available) throw new Error('本地会话不可读');
                 const rows = response.rows.map(item => normalize(item, id, item.index, catalog, false)).filter(Boolean);
-                const data = { status: 'ready', ...aggregate(rows, null) };
+                const data = { status: 'ready', ...aggregate(rows, null), context: response.context };
                 currentSnapshot = { id, data, at: Date.now() };
                 return data;
             })().finally(() => currentRequests.delete(id));

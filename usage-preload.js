@@ -62,6 +62,9 @@
           .row{padding:9px 0;border-top:1px solid var(--line)}.model{min-width:0;overflow-wrap:anywhere;font-weight:680}.total{flex:none;font-weight:700;font-variant-numeric:tabular-nums}
           .effort{display:inline-block;font-size:11px;color:var(--accent);background:var(--soft);border-radius:5px;padding:1px 5px;margin-left:5px;white-space:nowrap}
           .track{height:3px;margin:6px 0;background:var(--soft);border-radius:4px;overflow:hidden}.bar{height:100%;background:var(--bar)}
+          .context{margin-bottom:10px;padding:10px;border:1px solid var(--line);border-radius:9px}
+          .context .track{height:6px;margin:8px 0}
+          .context .bar[data-level=high]{background:#bd6b24}.context .bar[data-level=full]{background:#c94a56}
           .foot{border-top:1px solid var(--line);padding-top:8px}.status{padding:13px 0}.section{font-size:12px;font-weight:700;margin:5px 0}
           .convo{width:26px;height:26px;border-radius:50%}
           .convo .chart{width:12px;height:10px;display:flex;align-items:end;gap:2px}
@@ -236,6 +239,41 @@
             card.append(element('span', 'label', label), element('b', '', value));
             return card;
         }
+        function contextCard(context) {
+            const card = element('div', 'context');
+            const header = element('div', 'row-top');
+            header.append(element('div', 'model', '上下文窗口'));
+            card.append(header);
+            if (!context) {
+                card.append(element('div', 'label', '暂无上下文统计'));
+                return card;
+            }
+            const { used, limit, source, afterCompaction } = context;
+            const details = element('div', 'meta');
+            details.append(element('span', '', '已用约 ' + numbers.format(used) + ' Token'));
+            if (limit) {
+                const fraction = used / limit;
+                const scale = element('div', 'track');
+                const fill = element('div', 'bar');
+                fill.style.width = Math.min(100, fraction * 100) + '%';
+                if (fraction >= 0.8) fill.dataset.level = fraction >= 0.95 ? 'full' : 'high';
+                scale.setAttribute('role', 'progressbar');
+                scale.setAttribute('aria-label', '上下文占用');
+                scale.setAttribute('aria-valuemax', '100');
+                scale.setAttribute('aria-valuenow', String(Math.round(Math.min(1, fraction) * 100)));
+                scale.setAttribute('aria-valuetext', numbers.format(used) + ' / ' + numbers.format(limit) + ' Token');
+                scale.append(fill);
+                header.append(element('span', 'total', percent.format(fraction)));
+                details.append(element('span', '', '上限 ' + numbers.format(limit)),
+                    element('span', '', '剩余约 ' + numbers.format(Math.max(0, limit - used))));
+                card.append(scale);
+            } else {
+                details.append(element('span', '', '上限未提供'));
+            }
+            const caption = { live: '当前估算', history: '会话最近记录', 'previous-request': '最近一次模型请求开始时的估算' };
+            card.append(details, element('div', 'label', afterCompaction ? '压缩后的估算' : caption[source]));
+            return card;
+        }
         function render(data) {
             if (data.status !== 'ready') {
                 body.replaceChildren(element('div', 'status', data.status === 'offline'
@@ -243,10 +281,11 @@
                 return;
             }
             const totals = data.totals;
+            const context = conversation ? [contextCard(data.context)] : [];
             if (!totals.requests) {
                 const reason = data.failed ? '部分历史记录没能读取。' : conversation
                     ? '本次对话还没有可统计的模型用量。' : '这段时间没有找到带日期的 Gemini 用量记录。';
-                body.replaceChildren(element('div', 'status', reason));
+                body.replaceChildren(...context, element('div', 'status', reason));
                 return;
             }
             const summary = element('div', 'summary');
@@ -285,7 +324,7 @@
             if (data.failed) notes.push(data.failed + ' 个会话未完整读取');
             if (data.undated) notes.push(data.undated + ' 条缺少日期，未计入');
             if (totals.incomplete) notes.push(totals.incomplete + ' 次请求部分计数缺失');
-            body.replaceChildren(summary, list, element('div', 'foot', notes.join(' · ')));
+            body.replaceChildren(...context, summary, list, element('div', 'foot', notes.join(' · ')));
         }
         async function load(force = false, quiet = false) {
             if (conversation && !conversationId) return;
