@@ -13,7 +13,17 @@
 
 ## Windows 安装与还原
 
-已在 Windows 版 Antigravity 2.35.2 实测。需要 Node.js 22 或更新版本及 PowerShell。先保存正在处理的工作，再在能写入 Antigravity 安装目录的 PowerShell 中运行：
+### 双击安装
+
+1. 在 [Releases](https://github.com/xuyuanbao666/antigravity-gemini-usage/releases) 下载文件名以 `windows-x64.zip` 结尾的安装包。
+2. 完整解压到长期保留的目录。保存正在处理的 Antigravity 工作后，双击 `Install.cmd`。
+3. 需要卸载时，在同一目录双击 `Restore.cmd`。还原前请保留解压目录，里面存着安装时的原版程序包备份。
+
+安装包自带便携式 Node.js，无需单独安装。已验证的客户端版本是 Windows x64 上的 Antigravity 2.35.2。
+
+### 从源码安装
+
+从源码安装需有 Node.js 22 或更新版本及 PowerShell。先保存正在处理的工作，再在能写入 Antigravity 安装目录的 PowerShell 中运行：
 
 ```powershell
 .\manage.ps1 -Action Install
