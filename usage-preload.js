@@ -63,8 +63,17 @@
           .effort{display:inline-block;font-size:11px;color:var(--accent);background:var(--soft);border-radius:5px;padding:1px 5px;margin-left:5px;white-space:nowrap}
           .track{height:3px;margin:6px 0;background:var(--soft);border-radius:4px;overflow:hidden}.bar{height:100%;background:var(--bar)}
           .context{margin-bottom:10px;padding:10px;border:1px solid var(--line);border-radius:9px}
-          .context .track{height:6px;margin:8px 0}
-          .context .bar[data-level=high]{background:#bd6b24}.context .bar[data-level=full]{background:#c94a56}
+          .context-body{display:flex;align-items:center;gap:12px;margin-top:8px}
+          .context-ring{width:64px;height:64px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(var(--ring-color,var(--bar)) var(--occupied,0%),var(--soft) 0)}
+          .context-ring[data-level=high]{--ring-color:#bd6b24}.context-ring[data-level=full]{--ring-color:#c94a56}
+          .context-ring-center{width:52px;height:52px;display:grid;place-items:center;border-radius:50%;background:var(--surface);font-size:13px;font-weight:720;font-variant-numeric:tabular-nums}
+          .context-numbers{min-width:0;display:grid;gap:3px}.context-numbers strong{font-variant-numeric:tabular-nums}
+          .context-status{font-size:11px;color:var(--muted)}.context-status[data-level=high]{color:#b86c26}.context-status[data-level=full]{color:#ca4e5b}
+          .breakdown{margin-top:9px;border-top:1px solid var(--line);padding-top:7px}.breakdown summary{cursor:pointer;font-size:12px;font-weight:650}
+          .breakdown-strip{display:flex;gap:2px;height:5px;overflow:hidden;margin:9px 0;border-radius:4px;background:var(--soft)}
+          .breakdown-strip span{height:100%;min-width:0}
+          .breakdown-list{display:grid;gap:4px;margin:6px 0}.breakdown-row{display:grid;grid-template-columns:minmax(0,1fr) auto 47px;gap:8px;align-items:center;font-size:11px}
+          .breakdown-row .percent{text-align:right;color:var(--muted)}.breakdown-key{display:inline-flex;align-items:center;gap:5px}.swatch{width:7px;height:7px;border-radius:50%;flex:none}
           .foot{border-top:1px solid var(--line);padding-top:8px}.status{padding:13px 0}.section{font-size:12px;font-weight:700;margin:5px 0}
           .convo{width:26px;height:26px;border-radius:50%}
           .convo .chart{width:12px;height:10px;display:flex;align-items:end;gap:2px}
@@ -113,6 +122,7 @@
         let serial = 0;
         let timer;
         let conversationId = null;
+        let showBreakdown = false;
         const tabButtons = new Map((conversation ? [] : periods).map(([value, label]) => {
             const tab = button('tab', label);
             tab.setAttribute('aria-pressed', String(value === days));
@@ -248,31 +258,72 @@
                 card.append(element('div', 'label', '暂无上下文统计'));
                 return card;
             }
-            const { used, limit, source, afterCompaction } = context;
-            const details = element('div', 'meta');
-            details.append(element('span', '', '已用约 ' + numbers.format(used) + ' Token'));
+            const { used, limit, source, afterCompaction, breakdown } = context;
+            const details = element('div', 'context-numbers');
+            details.append(element('strong', '', '已用约 ' + numbers.format(used) + ' Token'));
+            const layout = element('div', 'context-body');
             if (limit) {
                 const fraction = used / limit;
-                const scale = element('div', 'track');
-                const fill = element('div', 'bar');
-                fill.style.width = Math.min(100, fraction * 100) + '%';
-                if (fraction >= 0.8) fill.dataset.level = fraction >= 0.95 ? 'full' : 'high';
-                scale.setAttribute('role', 'progressbar');
-                scale.setAttribute('aria-label', '上下文占用');
-                scale.setAttribute('aria-valuemax', '100');
-                scale.setAttribute('aria-valuenow', String(Math.round(Math.min(1, fraction) * 100)));
-                scale.setAttribute('aria-valuetext', numbers.format(used) + ' / ' + numbers.format(limit) + ' Token');
-                scale.append(fill);
-                header.append(element('span', 'total', percent.format(fraction)));
-                details.append(element('span', '', '上限 ' + numbers.format(limit)),
-                    element('span', '', '剩余约 ' + numbers.format(Math.max(0, limit - used))));
-                card.append(scale);
+                const level = fraction >= 0.9 ? 'full' : fraction >= 0.7 ? 'high' : 'normal';
+                const state = element('span', 'context-status', { full: '接近上限', high: '占用偏高', normal: '占用正常' }[level]);
+                state.dataset.level = level;
+                header.append(state);
+                const ring = element('div', 'context-ring');
+                ring.dataset.level = level;
+                ring.style.setProperty('--occupied', Math.min(100, fraction * 100) + '%');
+                ring.setAttribute('role', 'meter');
+                ring.setAttribute('aria-label', '上下文占用');
+                ring.setAttribute('aria-valuemin', '0');
+                ring.setAttribute('aria-valuemax', '100');
+                ring.setAttribute('aria-valuenow', String(Math.round(Math.min(1, fraction) * 100)));
+                ring.setAttribute('aria-valuetext', numbers.format(used) + ' / ' + numbers.format(limit) + ' Token');
+                ring.append(element('div', 'context-ring-center', percent.format(fraction)));
+                layout.append(ring);
+                details.append(element('div', 'meta', '上限 ' + numbers.format(limit) +
+                    ' · 剩余约 ' + numbers.format(Math.max(0, limit - used))));
             } else {
-                details.append(element('span', '', '上限未提供'));
+                details.append(element('div', 'meta', '上限未提供'));
             }
             const caption = { live: '当前估算', history: '会话最近记录', 'previous-request': '最近一次模型请求开始时的估算' };
-            card.append(details, element('div', 'label', afterCompaction ? '压缩后的估算' : caption[source]));
+            details.append(element('div', 'label', caption[source] + (afterCompaction ? ' · 压缩后' : '')));
+            layout.append(details);
+            card.append(layout);
+            if (breakdown) card.append(contextBreakdown(breakdown));
             return card;
+        }
+        function contextBreakdown(breakdown) {
+            const categories = {
+                messages: ['对话消息', '#4478dd'], system: ['系统提示词', '#258d6f'], tools: ['系统工具', '#866ad2'],
+                mcp: ['MCP 工具', '#c47229'], rules: ['规则文件', '#208f9d'], skills: ['技能', '#a27a2a'],
+                subagents: ['子代理', '#b6538d'], extensions: ['扩展与工作流', '#7158bc'],
+                other: ['其他上下文', '#7082a0'], unclassified: ['未分类', '#a0aac0'],
+            };
+            const section = element('details', 'breakdown');
+            section.open = showBreakdown;
+            section.addEventListener('toggle', () => { if (section.isConnected) showBreakdown = section.open; });
+            const strip = element('div', 'breakdown-strip');
+            strip.setAttribute('aria-hidden', 'true');
+            const list = element('div', 'breakdown-list');
+            for (const group of breakdown.groups) {
+                const [label, color] = categories[group.key] || categories.other;
+                const width = group.tokens / breakdown.total;
+                const segment = element('span');
+                segment.style.flex = String(width);
+                segment.style.background = color;
+                strip.append(segment);
+                const swatch = element('span', 'swatch');
+                swatch.style.background = color;
+                const key = element('span', 'breakdown-key');
+                key.append(swatch, element('span', '', label));
+                const line = element('div', 'breakdown-row');
+                line.append(key, element('span', '', numbers.format(group.tokens)), element('span', 'percent', percent.format(width)));
+                list.append(line);
+            }
+            const source = { live: '当前', history: '最近会话记录', 'linked-request': '对应的模型请求',
+                'previous-request': '最近一条有分类的模型请求' };
+            section.append(element('summary', '', '构成'), strip, list,
+                element('div', 'label', source[breakdown.source] + ' · 占比按该记录的分类总量计算'));
+            return section;
         }
         function render(data) {
             if (data.status !== 'ready') {

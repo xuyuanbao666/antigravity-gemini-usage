@@ -49,17 +49,47 @@ function readInAntigravity({ method, id }) {
         effortLevel: str(object?.effortLevel),
     });
     const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+    function integer(value) {
+        if (typeof value !== 'number' && typeof value !== 'bigint' &&
+            !(typeof value === 'string' && /^\d+$/.test(value))) return null;
+        const n = Number(value);
+        return Number.isSafeInteger(n) && n >= 0 ? n : null;
+    }
     function contextWindow(raw, source) {
-        const integer = value => {
-            if (typeof value !== 'number' && typeof value !== 'bigint' &&
-                !(typeof value === 'string' && /^\d+$/.test(value))) return null;
-            const n = Number(value);
-            return Number.isSafeInteger(n) && n >= 0 ? n : null;
-        };
         const used = integer(raw?.estimatedTokensUsed);
         const limit = integer(raw?.maxContextTokens);
         return used === null ? null : { used, limit: limit || null, source,
             afterCompaction: raw.estimatedAfterCompaction === true };
+    }
+    const chatModel = item => item?.metadata?.case === 'chatModel' ? item.metadata.value : item?.chatModel;
+    const requestContext = item => chatModel(item)?.chatStartMetadata?.contextWindowMetadata;
+    const groupNames = ['other', 'system', 'tools', 'rules', 'mcp', 'skills', 'subagents', 'messages'];
+    const namedGroups = Object.freeze({
+        SYSTEM_PROMPT: 'system', MCP_TOOLS: 'mcp', TOOLS: 'tools', RULES: 'rules', SKILLS: 'skills',
+        SUBAGENTS: 'subagents', CHAT_MESSAGES: 'messages', WORKFLOWS: 'extensions', PLUGINS: 'extensions', FLOWS: 'extensions',
+    });
+    function breakdownOf(raw, source) {
+        const breakdown = raw?.tokenBreakdown;
+        if (!Array.isArray(breakdown?.groups)) return null;
+        const groups = new Map();
+        for (const item of breakdown.groups) {
+            const amount = integer(item?.numTokens);
+            if (!amount) continue;
+            const type = typeof item.type === 'string' ? item.type.trim().toUpperCase() : item.type;
+            const number = integer(type);
+            const name = number === null ? Object.keys(namedGroups).find(key => type === key || type?.endsWith?.('_' + key))
+                : null;
+            const category = number === null ? namedGroups[name] || 'other'
+                : number >= 8 && number <= 10 ? 'extensions' : groupNames[number] || 'other';
+            groups.set(category, (groups.get(category) || 0) + amount);
+        }
+        if (!groups.size) return null;
+        const reported = integer(breakdown.totalTokens);
+        const categorized = [...groups.values()].reduce((sum, amount) => sum + amount, 0);
+        if (!Number.isSafeInteger(categorized)) return null;
+        if (reported > categorized) groups.set('unclassified', reported - categorized);
+        return { source, total: Math.max(reported || 0, categorized),
+            groups: [...groups].map(([key, tokens]) => ({ key, tokens })).sort((a, b) => b.tokens - a.tokens) };
     }
 
     return (async () => {
@@ -90,20 +120,38 @@ function readInAntigravity({ method, id }) {
         const items = Array.isArray(trajectory?.generatorMetadata) ? trajectory.generatorMetadata : [];
         let context = null;
         if (wantsContext) {
+            let live;
             try {
                 const provider = manager?.peek(id);
-                context = contextWindow(provider?.getState?.()?.contextWindowUsage, 'live');
+                live = provider?.getState?.()?.contextWindowUsage;
             } catch {}
-            context ||= contextWindow(result?.contextWindowUsage, 'history') ||
-                contextWindow(trajectory?.contextWindowUsage, 'history');
+            const native = [
+                [live, 'live'],
+                [result?.contextWindowUsage, 'history'],
+                [trajectory?.contextWindowUsage, 'history'],
+            ].find(([raw, source]) => contextWindow(raw, source));
+            if (native) {
+                const [raw, source] = native;
+                context = contextWindow(raw, source);
+                context.breakdown = breakdownOf(raw, source);
+                const index = integer(raw.generatorMetadataIndex);
+                if (!context.breakdown && index !== null) {
+                    context.breakdown = breakdownOf(requestContext(items[index]), 'linked-request');
+                }
+            }
             for (let index = items.length - 1; index >= 0 && !context; index--) {
-                const item = items[index];
-                const chat = item?.metadata?.case === 'chatModel' ? item.metadata.value : item?.chatModel;
-                context = contextWindow(chat?.chatStartMetadata?.contextWindowMetadata, 'previous-request');
+                const raw = requestContext(items[index]);
+                context = contextWindow(raw, 'previous-request');
+                if (context) context.breakdown = breakdownOf(raw, 'previous-request');
+            }
+            if (context && !context.breakdown) {
+                for (let index = items.length - 1; index >= 0 && !context.breakdown; index--) {
+                    context.breakdown = breakdownOf(requestContext(items[index]), 'previous-request');
+                }
             }
         }
         return { rows: items.map((item, index) => {
-            const chat = item?.metadata?.case === 'chatModel' ? item.metadata.value : item?.chatModel;
+            const chat = chatModel(item);
             const usage = chat?.usage;
             if (!usage) return null;
             const start = chat.chatStartMetadata;
